@@ -46,7 +46,7 @@ def add_destination(trip_id: int, dest: schemas.DestinationCreate, db: Session =
 
 @router.get("/{trip_id}/list", response_model=List[schemas.DestinationOut])
 def list_destinations(trip_id: int, db: Session = Depends(get_db)):
-    # Verify trip exists
+# verify trip exists
     trip = db.query(models.Trip).filter(models.Trip.id == trip_id).first()
     if not trip:
         raise HTTPException(
