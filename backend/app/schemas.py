@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, validator
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 from app.models import TransportMode
 
 class UserCreate(BaseModel):
