@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   View, 
   Text, 
@@ -9,17 +9,19 @@ import {
   ActivityIndicator,
   RefreshControl,
   Modal,
-  ScrollView
+  TextInput
 } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Picker } from '@react-native-picker/picker';
 import * as Location from 'expo-location';
 
-const BASE_URL = 'http://10.0.2.2:8000';
+const BASE_URL = 'http://10.0.2.2:8000'; // For Android Emulator
+// const BASE_URL = 'http://YOUR_SERVER_IP:8000'; // For physical device
+
+const TRANSPORT_MODES = ['car', 'bike', 'walk', 'metro', 'train'];
 
 export default function TripScreen({ route, navigation }) {
-  const { userId, userName } = route.params;
+  const { userId, userName, userEmail } = route.params;
   const [trips, setTrips] = useState([]);
   const [activeTrip, setActiveTrip] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -37,15 +39,23 @@ export default function TripScreen({ route, navigation }) {
   const requestLocationPermission = async () => {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === 'granted') {
-        const location = await Location.getCurrentPositionAsync({});
-        setCurrentLocation({
-          lat: location.coords.latitude,
-          lng: location.coords.longitude
-        });
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'Location permission is required for trip tracking');
+        return;
       }
+      
+      const location = await Location.getCurrentPositionAsync({});
+      setCurrentLocation({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude
+      });
     } catch (error) {
-      console.log('Location permission error:', error);
+      console.error('Location error:', error);
+      // Set default location (Kolkata)
+      setCurrentLocation({
+        latitude: 22.5726,
+        longitude: 88.3639
+      });
     }
   };
 
@@ -55,6 +65,7 @@ export default function TripScreen({ route, navigation }) {
       setTrips(response.data);
     } catch (error) {
       console.error('Error fetching trips:', error);
+      Alert.alert('Error', 'Failed to fetch trips');
     }
   };
 
@@ -63,35 +74,41 @@ export default function TripScreen({ route, navigation }) {
       const response = await axios.get(`${BASE_URL}/trip/active/${userId}`);
       setActiveTrip(response.data);
     } catch (error) {
+      // No active trip - this is normal
       setActiveTrip(null);
     }
   };
 
-  const onRefresh = async () => {
+  const onRefresh = useCallback(() => {
     setRefreshing(true);
-    await Promise.all([fetchTrips(), checkActiveTrip()]);
-    setRefreshing(false);
-  };
+    Promise.all([fetchTrips(), checkActiveTrip()])
+      .finally(() => setRefreshing(false));
+  }, []);
 
   const startTrip = async () => {
+    if (!currentLocation) {
+      Alert.alert('Error', 'Unable to get current location');
+      return;
+    }
+
     setLoading(true);
+    setModalVisible(false);
+
     try {
-      const location = currentLocation || { lat: 20.2961, lng: 85.8245 };
-      
       const response = await axios.post(
         `${BASE_URL}/trip/start?user_id=${userId}`,
         {
           mode: selectedMode,
-          start_lat: location.lat,
-          start_lng: location.lng,
+          start_lat: currentLocation.latitude,
+          start_lng: currentLocation.longitude,
         }
       );
       
       setActiveTrip(response.data);
-      setModalVisible(false);
-      Alert.alert('Success', 'Trip started successfully');
+      Alert.alert('Success', 'Trip started successfully!');
       fetchTrips();
     } catch (error) {
+      console.error('Start trip error:', error);
       Alert.alert('Error', error.response?.data?.detail || 'Failed to start trip');
     } finally {
       setLoading(false);
@@ -99,32 +116,28 @@ export default function TripScreen({ route, navigation }) {
   };
 
   const stopTrip = async () => {
-    if (!activeTrip) {
-      return;
-    }
+    if (!activeTrip || !currentLocation) return;
     
     Alert.alert(
       'End Trip',
       'Are you sure you want to end this trip?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'End Trip', 
+        {
+          text: 'End Trip',
           style: 'destructive',
           onPress: async () => {
             setLoading(true);
             try {
-              const location = currentLocation || { lat: 20.2961, lng: 85.8245 };
-              
               const response = await axios.post(
                 `${BASE_URL}/trip/stop/${activeTrip.id}`,
                 {
-                  end_lat: location.lat,
-                  end_lng: location.lng,
+                  end_lat: currentLocation.latitude,
+                  end_lng: currentLocation.longitude,
                 }
               );
               
-              Alert.alert('Success', `Trip ended. Duration: ${response.data.duration_minutes} minutes`);
+              Alert.alert('Success', `Trip ended! Duration: ${response.data.duration_minutes} minutes`);
               setActiveTrip(null);
               fetchTrips();
             } catch (error) {
@@ -138,47 +151,14 @@ export default function TripScreen({ route, navigation }) {
     );
   };
 
-  const renderTripItem = ({ item }) => (
-    <TouchableOpacity 
-      style={styles.tripItem}
-      onPress={() => {
-        if (item.status === 'completed') {
-          navigation.navigate('Map', { 
-            tripId: item.id,
-            tripData: item 
-          });
-        }
-      }}
-    >
-      <View style={styles.tripHeader}>
-        <Text style={styles.tripId}>Trip #{item.id}</Text>
-        <Text style={[
-          styles.tripStatus,
-          item.status === 'active' ? styles.activeStatus : styles.completedStatus
-        ]}>
-          {item.status.toUpperCase()}
-        </Text>
-      </View>
-      <Text style={styles.tripMode}>Mode: {item.mode}</Text>
-      <Text style={styles.tripDate}>
-        {new Date(item.start_time).toLocaleDateString()} at {new Date(item.start_time).toLocaleTimeString()}
-      </Text>
-      {item.end_time && (
-        <Text style={styles.tripDuration}>
-          Duration: {Math.round((new Date(item.end_time) - new Date(item.start_time)) / 60000)} minutes
-        </Text>
-      )}
-    </TouchableOpacity>
-  );
-
-  const logout = async () => {
+  const handleLogout = async () => {
     Alert.alert(
       'Logout',
       'Are you sure you want to logout?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Logout', 
+        {
+          text: 'Logout',
           style: 'destructive',
           onPress: async () => {
             await AsyncStorage.clear();
@@ -189,25 +169,60 @@ export default function TripScreen({ route, navigation }) {
     );
   };
 
+  const renderTripItem = ({ item }) => {
+    const startTime = new Date(item.start_time);
+    const endTime = item.end_time ? new Date(item.end_time) : null;
+    const duration = endTime 
+      ? Math.round((endTime - startTime) / 60000) 
+      : null;
+
+    return (
+      <TouchableOpacity 
+        style={styles.tripItem}
+        onPress={() => {
+          if (item.status === 'completed') {
+            navigation.navigate('Map', { 
+              tripId: item.id,
+              userId: userId 
+            });
+          }
+        }}
+      >
+        <View style={styles.tripHeader}>
+          <Text style={styles.tripId}>Trip #{item.id}</Text>
+          <View style={[styles.statusBadge, 
+            item.status === 'active' ? styles.activeBadge : styles.completedBadge
+          ]}>
+            <Text style={styles.statusText}>{item.status.toUpperCase()}</Text>
+          </View>
+        </View>
+        <Text style={styles.tripMode}>🚗 Mode: {item.mode}</Text>
+        <Text style={styles.tripDate}>📅 {startTime.toLocaleDateString()}</Text>
+        <Text style={styles.tripTime}>⏰ {startTime.toLocaleTimeString()}</Text>
+        {duration && (
+          <Text style={styles.tripDuration}>⏱️ Duration: {duration} minutes</Text>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <View>
           <Text style={styles.welcome}>Welcome, {userName}!</Text>
-          <Text style={styles.locationText}>
-            📍 {currentLocation ? 'Location Available' : 'Location Not Available'}
-          </Text>
+          <Text style={styles.email}>{userEmail}</Text>
         </View>
-        <TouchableOpacity onPress={logout} style={styles.logoutButton}>
+        <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
           <Text style={styles.logoutText}>Logout</Text>
         </TouchableOpacity>
       </View>
-      
+
       {activeTrip ? (
         <View style={styles.activeTrip}>
-          <Text style={styles.activeText}>Active Trip</Text>
-          <Text style={styles.tripDetail}>Mode: {activeTrip.mode}</Text>
-          <Text style={styles.tripDetail}>
+          <Text style={styles.activeTitle}>🔴 Active Trip</Text>
+          <Text style={styles.activeInfo}>Mode: {activeTrip.mode}</Text>
+          <Text style={styles.activeInfo}>
             Started: {new Date(activeTrip.start_time).toLocaleTimeString()}
           </Text>
           
@@ -217,13 +232,18 @@ export default function TripScreen({ route, navigation }) {
               onPress={stopTrip}
               disabled={loading}
             >
-              <Text style={styles.buttonText}>End Trip</Text>
+              {loading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>End Trip</Text>
+              )}
             </TouchableOpacity>
             
             <TouchableOpacity 
               style={[styles.button, styles.mapButton]}
               onPress={() => navigation.navigate('Map', { 
                 tripId: activeTrip.id,
+                userId: userId,
                 isActive: true 
               })}
             >
@@ -233,30 +253,38 @@ export default function TripScreen({ route, navigation }) {
         </View>
       ) : (
         <TouchableOpacity 
-          style={styles.startButton}
+          style={[styles.button, styles.startButton]}
           onPress={() => setModalVisible(true)}
           disabled={loading}
         >
-          <Text style={styles.startButtonText}>Start New Trip</Text>
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.buttonText}>Start New Trip</Text>
+          )}
         </TouchableOpacity>
       )}
 
       <Text style={styles.sectionTitle}>Trip History</Text>
       
-      <FlatList
-        data={trips}
-        keyExtractor={(item) => item.id.toString()}
-        renderItem={renderTripItem}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
-        ListEmptyComponent={
-          <Text style={styles.emptyText}>No trips yet. Start your first trip!</Text>
-        }
-        contentContainerStyle={trips.length === 0 ? styles.emptyList : null}
-      />
+      {trips.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyText}>No trips yet</Text>
+          <Text style={styles.emptySubtext}>Start your first trip to see it here</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={trips}
+          keyExtractor={(item) => item.id.toString()}
+          renderItem={renderTripItem}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          }
+          contentContainerStyle={styles.listContainer}
+        />
+      )}
 
-      {/* Start Trip Modal */}
+      {/* Transport Mode Selection Modal */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -265,43 +293,36 @@ export default function TripScreen({ route, navigation }) {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Start New Trip</Text>
-            
-            <Text style={styles.modalLabel}>Select Transport Mode:</Text>
-            <View style={styles.pickerContainer}>
-              <Picker
-                selectedValue={selectedMode}
-                onValueChange={setSelectedMode}
-                style={styles.picker}
+            <Text style={styles.modalTitle}>Select Transport Mode</Text>
+            {TRANSPORT_MODES.map((mode) => (
+              <TouchableOpacity
+                key={mode}
+                style={[
+                  styles.modeOption,
+                  selectedMode === mode && styles.selectedMode
+                ]}
+                onPress={() => setSelectedMode(mode)}
               >
-                <Picker.Item label="🚗 Car" value="car" />
-                <Picker.Item label="🏍️ Bike" value="bike" />
-                <Picker.Item label="🚂 Train" value="train" />
-                <Picker.Item label="🚇 Metro" value="metro" />
-                <Picker.Item label="🚶 Walk" value="walk" />
-              </Picker>
-            </View>
-
+                <Text style={[
+                  styles.modeText,
+                  selectedMode === mode && styles.selectedModeText
+                ]}>
+                  {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                </Text>
+              </TouchableOpacity>
+            ))}
             <View style={styles.modalButtons}>
               <TouchableOpacity 
-                style={[styles.modalButton, styles.cancelButton]}
+                style={[styles.button, styles.cancelButton]}
                 onPress={() => setModalVisible(false)}
               >
-                <Text style={styles.modalButtonText}>Cancel</Text>
+                <Text style={styles.buttonText}>Cancel</Text>
               </TouchableOpacity>
-              
               <TouchableOpacity 
-                style={[styles.modalButton, styles.confirmButton]}
+                style={[styles.button, styles.confirmButton]}
                 onPress={startTrip}
-                disabled={loading}
               >
-                {loading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={[styles.modalButtonText, { color: '#fff' }]}>
-                    Start Trip
-                  </Text>
-                )}
+                <Text style={styles.buttonText}>Start Trip</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -328,36 +349,37 @@ const styles = StyleSheet.create({
   welcome: {
     fontSize: 20,
     fontWeight: 'bold',
+    color: '#333',
   },
-  locationText: {
-    fontSize: 12,
+  email: {
+    fontSize: 14,
     color: '#666',
-    marginTop: 4,
+    marginTop: 2,
   },
   logoutButton: {
     padding: 8,
   },
   logoutText: {
-    color: '#ff3b30',
+    color: '#FF3B30',
     fontWeight: '600',
   },
   activeTrip: {
-    backgroundColor: '#e7f3ff',
+    backgroundColor: '#FFF3E0',
     padding: 20,
     margin: 15,
-    borderRadius: 10,
-    borderLeftWidth: 4,
-    borderLeftColor: '#007AFF',
+    borderRadius: 15,
+    borderWidth: 2,
+    borderColor: '#FF9800',
   },
-  activeText: {
-    fontSize: 18,
+  activeTitle: {
+    fontSize: 20,
     fontWeight: 'bold',
-    color: '#007AFF',
+    color: '#FF6B00',
     marginBottom: 10,
   },
-  tripDetail: {
-    fontSize: 14,
-    color: '#333',
+  activeInfo: {
+    fontSize: 16,
+    color: '#666',
     marginBottom: 5,
   },
   buttonRow: {
@@ -367,28 +389,28 @@ const styles = StyleSheet.create({
   },
   button: {
     flex: 1,
-    padding: 12,
-    borderRadius: 8,
+    padding: 15,
+    borderRadius: 10,
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  startButton: {
+    backgroundColor: '#4CAF50',
+    margin: 15,
   },
   stopButton: {
-    backgroundColor: '#ff3b30',
+    backgroundColor: '#FF3B30',
   },
   mapButton: {
     backgroundColor: '#007AFF',
   },
+  confirmButton: {
+    backgroundColor: '#4CAF50',
+  },
+  cancelButton: {
+    backgroundColor: '#999',
+  },
   buttonText: {
-    color: 'white',
-    fontWeight: 'bold',
-  },
-  startButton: {
-    backgroundColor: '#34c759',
-    margin: 15,
-    padding: 15,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  startButtonText: {
     color: 'white',
     fontSize: 16,
     fontWeight: 'bold',
@@ -396,69 +418,86 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    marginLeft: 20,
+    marginHorizontal: 15,
     marginTop: 10,
     marginBottom: 10,
+    color: '#333',
+  },
+  listContainer: {
+    paddingBottom: 20,
   },
   tripItem: {
     backgroundColor: 'white',
-    padding: 15,
     marginHorizontal: 15,
-    marginVertical: 5,
-    borderRadius: 8,
+    marginBottom: 10,
+    padding: 15,
+    borderRadius: 10,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.05,
     shadowRadius: 2,
     elevation: 2,
   },
   tripHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    alignItems: 'center',
+    marginBottom: 10,
   },
   tripId: {
     fontSize: 16,
     fontWeight: 'bold',
+    color: '#333',
   },
-  tripStatus: {
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  activeBadge: {
+    backgroundColor: '#4CAF50',
+  },
+  completedBadge: {
+    backgroundColor: '#007AFF',
+  },
+  statusText: {
+    color: 'white',
     fontSize: 12,
     fontWeight: 'bold',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  activeStatus: {
-    backgroundColor: '#34c759',
-    color: 'white',
-  },
-  completedStatus: {
-    backgroundColor: '#8e8e93',
-    color: 'white',
   },
   tripMode: {
     fontSize: 14,
     color: '#666',
-    marginBottom: 4,
+    marginBottom: 3,
   },
   tripDate: {
-    fontSize: 12,
-    color: '#999',
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 3,
+  },
+  tripTime: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 3,
   },
   tripDuration: {
-    fontSize: 12,
-    color: '#007AFF',
-    marginTop: 4,
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '600',
   },
-  emptyList: {
-    flex: 1,
-    justifyContent: 'center',
+  emptyState: {
     alignItems: 'center',
+    justifyContent: 'center',
+    padding: 40,
   },
   emptyText: {
-    fontSize: 16,
+    fontSize: 18,
     color: '#999',
-    textAlign: 'center',
+    marginBottom: 5,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#bbb',
   },
   modalOverlay: {
     flex: 1,
@@ -468,10 +507,9 @@ const styles = StyleSheet.create({
   },
   modalContent: {
     backgroundColor: 'white',
-    borderRadius: 15,
-    padding: 20,
-    width: '85%',
-    maxWidth: 400,
+    borderRadius: 20,
+    padding: 25,
+    width: '80%',
   },
   modalTitle: {
     fontSize: 20,
@@ -479,38 +517,29 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     textAlign: 'center',
   },
-  modalLabel: {
-    fontSize: 16,
-    marginBottom: 10,
-    color: '#333',
-  },
-  pickerContainer: {
+  modeOption: {
+    padding: 15,
     borderWidth: 1,
     borderColor: '#ddd',
-    borderRadius: 8,
-    marginBottom: 20,
+    borderRadius: 10,
+    marginBottom: 10,
   },
-  picker: {
-    height: 50,
+  selectedMode: {
+    backgroundColor: '#007AFF',
+    borderColor: '#007AFF',
+  },
+  modeText: {
+    fontSize: 16,
+    textAlign: 'center',
+    color: '#333',
+  },
+  selectedModeText: {
+    color: 'white',
+    fontWeight: 'bold',
   },
   modalButtons: {
     flexDirection: 'row',
     gap: 10,
-  },
-  modalButton: {
-    flex: 1,
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  cancelButton: {
-    backgroundColor: '#f0f0f0',
-  },
-  confirmButton: {
-    backgroundColor: '#007AFF',
-  },
-  modalButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
+    marginTop: 20,
   },
 });
