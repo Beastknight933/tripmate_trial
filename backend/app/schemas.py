@@ -67,6 +67,13 @@ class DestinationCreate(BaseModel):
         if not v.strip():
             raise ValueError('Destination name cannot be empty')
         return v.strip()
+    
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user_id: int
+    name: str
+    email: str
 
 class DestinationOut(DestinationCreate):
     id: int
